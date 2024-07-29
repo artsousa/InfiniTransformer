@@ -31,6 +31,9 @@ import random
 from itertools import chain
 from pathlib import Path
 
+# import torch.distributed.elastic.multiprocessing.errors as errors
+# import torch.distributed.elastic.multiprocessing.errors.ChildFailedError
+
 import datasets
 import torch
 from accelerate import Accelerator, DistributedType
@@ -40,6 +43,9 @@ from datasets import load_dataset
 from huggingface_hub import HfApi
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
+
+from torch.distributed.elastic.multiprocessing.errors import record
+
 
 import transformers
 from transformers import (
@@ -300,7 +306,7 @@ def parse_args():
 
     return args
 
-
+@record
 def main():
     args = parse_args()
 
@@ -321,6 +327,7 @@ def main():
     print("segment_length:", segment_length)
     gradient_accumulation_steps = args.block_size // segment_length
     print("gradient_accumulation_steps:", gradient_accumulation_steps)
+    
     accelerator = Accelerator(
         gradient_accumulation_steps=gradient_accumulation_steps,
         **accelerator_log_kwargs,
@@ -339,6 +346,12 @@ def main():
     else:
         datasets.utils.logging.set_verbosity_error()
         transformers.utils.logging.set_verbosity_error()
+
+    logger.info(f"OutputDIR: {args.output_dir},")
+    
+    #for h in logger.handlers:
+    #    if isinstance(h, logging.FileHandler):
+    #        logger.info(f"File location: {h.baseFilename}")
 
     # If passed along, set the training seed now.
     if args.seed is not None:
@@ -905,6 +918,21 @@ def main():
             with open(os.path.join(args.output_dir, "all_results.json"), "w") as f:
                 json.dump({"perplexity": perplexity}, f)
 
+from torch.distributed.elastic.multiprocessing.errors.handlers import get_error_handler
+from torch.distributed.elastic.multiprocessing.errors import ChildFailedError
 
 if __name__ == "__main__":
-    main()
+   
+    error_handler = get_error_handler()
+    error_handler.initialize()
+
+    try:
+        main()
+    except ChildFailedError as e:
+        _, failure = e.get_first_failure()
+        error_handler.dump_error_file(failure.error_file, failure.exitcode)
+        raise
+    except Exception as e:
+        error_handler.record_exception(e)
+        raise
+
